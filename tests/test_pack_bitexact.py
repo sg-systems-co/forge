@@ -163,3 +163,81 @@ def test_rejects_bad_shapes_and_values():
         pack_tq2_0(np.full((1, 256), 2, np.int8), np.ones(1, np.float32))
     with pytest.raises(ValueError, match="buffer is"):
         unpack_tq2_0(b"\x00" * 10, 256)
+
+
+# ------------------------------------------------------- lossless re-quantization
+#
+# FORGE exports by writing its ternary *reconstruction* (s * t, in float) to a normal
+# safetensors checkpoint, converting that to GGUF with llama.cpp's own converter, and
+# then running llama-quantize to TQ2_0. That reuses all of upstream's metadata handling
+# instead of hand-rolling a GGUF writer -- but it is only correct if ggml's amax
+# quantizer is *lossless* on weights that are already exactly ternary.
+#
+# It is, and this is why: for a block whose values are s * t with t in {-1,0,1} and at
+# least one non-zero, amax == s exactly, so lround(w / amax) == t exactly. These tests
+# pin that property, including the edge cases where it could fail.
+
+
+def _reconstruct(t, scale):
+    return (t.astype(np.float32) * np.repeat(scale, QK_K, axis=1)).astype(np.float32)
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_amax_requantization_is_lossless_on_ternary_weights(seed):
+    """The property the whole export path rests on."""
+    rng = np.random.default_rng(seed)
+    t = rng.integers(-1, 2, size=(6, 1024)).astype(np.int8)
+    # Guarantee each block has at least one non-zero, so amax == scale.
+    t[:, ::QK_K] = 1
+    scale = (rng.random((6, 4)).astype(np.float32) + 0.1).astype(np.float16).astype(np.float32)
+
+    buf = quantize_amax_reference(_reconstruct(t, scale))
+    t2, s2 = unpack_tq2_0(buf, t.size)
+
+    np.testing.assert_array_equal(t2.reshape(t.shape), t)
+    np.testing.assert_array_equal(s2.reshape(scale.shape), scale)
+
+
+@pytest.mark.needs_ggml
+@pytest.mark.parametrize("seed", range(5))
+def test_ggml_requantization_is_lossless_on_ternary_weights(ggml, seed):
+    """Same property, but asserted against the real ggml quantizer rather than ours."""
+    rng = np.random.default_rng(seed)
+    t = rng.integers(-1, 2, size=(4, 768)).astype(np.int8)
+    t[:, ::QK_K] = -1
+    scale = (rng.random((4, 3)).astype(np.float32) + 0.1).astype(np.float16).astype(np.float32)
+
+    buf = ggml_quantize(ggml, _reconstruct(t, scale))
+    t2, s2 = unpack_tq2_0(buf, t.size)
+
+    np.testing.assert_array_equal(t2.reshape(t.shape), t)
+    np.testing.assert_array_equal(s2.reshape(scale.shape), scale)
+
+
+def test_all_zero_block_survives_requantization():
+    """A dead block has amax == 0, so ggml writes d = 0 and all-zero codes.
+
+    The reconstruction is 0 either way, so this is lossless in *value* even though the
+    scale is not preserved. Worth pinning explicitly: it is the one case where the
+    round trip does not reproduce the scale.
+    """
+    t = np.zeros((1, QK_K), np.int8)
+    scale = np.array([[0.75]], np.float32)
+    buf = quantize_amax_reference(_reconstruct(t, scale))
+    t2, s2 = unpack_tq2_0(buf, QK_K)
+    np.testing.assert_array_equal(t2, t)
+    assert s2[0] == 0.0
+    np.testing.assert_array_equal(
+        t2.astype(np.float32) * s2[0], np.zeros((1, QK_K), np.float32)
+    )
+
+
+def test_scale_must_be_fp16_representable():
+    """FORGE rounds scales to fp16 before packing; if it did not, the export round trip
+    would silently change them. This documents why that rounding is mandatory."""
+    t = np.ones((1, QK_K), np.int8)
+    scale_f32 = np.array([[0.1234567]], np.float32)
+    buf = quantize_amax_reference(_reconstruct(t, scale_f32))
+    _, s2 = unpack_tq2_0(buf, QK_K)
+    assert s2[0] == np.float16(0.1234567).astype(np.float32)
+    assert s2[0] != scale_f32[0, 0]  # the fp32 value did not survive, as expected

@@ -15,6 +15,7 @@ from forge.config import ForgeConfig
 from forge.eval.perplexity import perplexity
 from forge.eval.report import markdown_table, write_report
 from forge.models.registry import build_graph
+from forge.pack.gguf_writer import export_gguf
 from forge.quant.sequential import quantize_model
 from forge.rotate.fuse import fuse_rotations
 from forge.quant.apply import (
@@ -202,10 +203,12 @@ def cmd_quantize(args) -> None:
     model, tok, graph = load_model(cfg)
     print(graph.summary(), flush=True)
 
+    plan = None
     if cfg.rotation.enabled:
         t0 = time.time()
-        fuse_rotations(model, graph, seed=cfg.rotation.seed, kind=cfg.rotation.kind,
-                       rotate_head_dim=cfg.rotation.rotate_head_dim, dtype=torch.float32)
+        plan = fuse_rotations(model, graph, seed=cfg.rotation.seed, kind=cfg.rotation.kind,
+                              rotate_head_dim=cfg.rotation.rotate_head_dim,
+                              dtype=torch.float32)
         print(f"\nfused rotations in {time.time()-t0:.1f}s", flush=True)
 
     ids = calibration_batch(tok, cfg.calib.dataset, cfg.calib.nsamples, cfg.calib.seqlen,
@@ -228,6 +231,12 @@ def cmd_quantize(args) -> None:
         windows = windows[: args.limit]
     ppl = perplexity(model, windows, device)
     print(f"\nwikitext2 ppl = {ppl:.4f}  ({windows.shape[0]} x {windows.shape[1]} tokens)")
+
+    if args.export:
+        t0 = time.time()
+        path = export_gguf(model, tok, args.export, cfg, rotation_plan=plan)
+        size_gb = path.stat().st_size / 1e9
+        print(f"exported {path} ({size_gb:.2f} GB) in {time.time()-t0:.1f}s")
 
     if args.out:
         write_report(args.out, "FORGE quantization", report.by_tensor(), notes=(
@@ -281,6 +290,7 @@ def main() -> None:
     p.add_argument("--no-rescale", action="store_true")
     p.add_argument("--limit", type=int, help="perplexity windows to evaluate")
     p.add_argument("--out", help="write a markdown report here")
+    p.add_argument("--export", help="write a stock TQ2_0 GGUF here")
     p.set_defaults(func=cmd_quantize)
 
     args = parser.parse_args()
