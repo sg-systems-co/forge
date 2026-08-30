@@ -147,6 +147,17 @@ The numbers above were re-taken across three independent runs after confirming l
 had settled, and agree to ~1%. Any future throughput claim in this file should be taken the
 same way.
 
+**The quantization wall-clock was *not* meaningfully affected.** Compared like-for-like
+(blocks 1-8 of each run) the contended and idle runs differ by 8%, in the *opposite*
+direction — the idle re-run was marginally slower. What looks like contention within the
+original run is drift over its own duration: 17.1 s/block early against 19.6 s/block late,
+consistent with thermal behaviour rather than an external process. Treat the ~10 minute
+figure as accurate with roughly +/-10% run-to-run variance.
+
+The general lesson: `llama-bench`-style throughput was sensitive to load, and long-running
+wall-clock was not, because the latter is dominated by sustained work on the same device
+rather than by scheduling latency.
+
 **Accuracy numbers are unaffected by load.** Perplexity, relative error, attenuation and
 sparsity are deterministic given the seeds: `10.3999` and `404729.5582` reproduce to every
 digit across runs under different load. Contention changes wall-clock, never values.
