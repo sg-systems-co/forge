@@ -1,186 +1,230 @@
 # FORGE results
 
-All measurements on **Qwen2.5-Coder-1.5B**, Apple M5 Max (128 GB), MPS backend, float32.
-Calibration: 128 x 2048 tokens from wikitext2 (seed 0). Perplexity: full wikitext2 test
-split, 146 non-overlapping 2048-token windows.
-
-Reproduce with:
-
-```bash
-forge quantize --nsamples 128 --out docs/results_m2.md
-```
+Training-free ternary PTQ. All numbers reproducible from this repository; see
+[Reproducing](#reproducing).
 
 ---
 
-## Headline
+## v1 shipping configuration — Qwen2.5-Coder-7B
 
-| Configuration | wikitext2 ppl | vs FP16 |
+Six of the seven transformer linears at `TQ2_0`; `ffn_down` retained at `Q6_K`. This is
+ordinary per-tensor type mixing that stock `llama-quantize` performs, so the checkpoint is
+a plain GGUF that **unmodified llama.cpp loads**. No online rotation, no custom graph, no
+fork.
+
+| build | size | wikitext2 ppl | vs FP16 | decode t/s | vs FP16 |
+|---|---:|---:|---:|---:|---:|
+| F16 | 15.24 GB | 6.2731 | 1.00x | 34.51 | 1.00x |
+| Q4_K_M | 4.68 GB | 6.3727 | 1.02x | 101.43 | 2.94x |
+| **FORGE mixed** | **3.51 GB** | **9.4150** | **1.50x** | **120.87** | **3.50x** |
+
+* **4.3x smaller than F16**, **1.33x smaller than Q4_K_M**
+* **3.5x faster decode than F16**, **1.19x faster than Q4_K_M**
+
+Measured with `llama-perplexity -c 2048 --chunks 12` and `llama-bench -n 128 -r 5` on the
+actual GGUF files, Apple M5 Max, Metal backend.
+
+### ⚠ Read the caveats before quoting any of this
+
+Four, in descending order of how much they should change your plans. The fourth is the one
+that matters most and is **not** visible in the table above.
+
+---
+
+## Caveat 1 — this is no longer a 1.58-bit model
+
+`ffn_down` is **29% of the transformer-linear parameters** (1.901 B of 6.525 B at 7B).
+Retaining it at Q6_K puts the effective rate across those layers at **~2.8 bpw**, not the
+2.0625 bpw of pure `TQ2_0`.
+
+| `ffn_down` type | total size | vs FP16 | vs Q4_K_M | effective bpw |
+|---|---:|---:|---:|---:|
+| TQ2_0 (pure ternary) | 2.58 GB | 5.9x | 1.82x smaller | 2.06 |
+| **Q6_K (shipped)** | **3.51 GB** | **4.3x** | **1.33x smaller** | **~2.8** |
+| Q4_K | 3.16 GB | 4.8x | 1.49x smaller | ~2.8 |
+
+Describing this as a "1.58-bit" or "ternary" checkpoint would be misleading. It is a
+**mixed 2.06/6.56-bit checkpoint** whose weight-dominant layers are ternary.
+
+Pure ternary at 7B reaches 16.4415 ppl (2.17x FP16) — outside the 9–14 target band.
+Excluding `ffn_down` is what brought it inside.
+
+## Caveat 2 — 1.50x perplexity degradation, against a near-lossless INT4
+
+Q4_K_M costs **1.02x** perplexity. FORGE costs **1.50x**. Against INT4 specifically, FORGE
+buys 1.33x size and 1.19x decode speed **for a real and much larger quality loss**.
+
+The honest case for FORGE is *memory-constrained deployment* — fitting a model in RAM that
+otherwise would not fit at all. It is not a free win over INT4, and on a machine where
+Q4_K_M already fits, Q4_K_M is the better checkpoint.
+
+## Caveat 3 — base model, no chat template
+
+Qwen2.5-Coder-7B is a **base** model. `llama-cli` and `llama-completion` apply a chat
+template by default, and a base model fed a chat template emits degenerate output
+**regardless of quantization** — this briefly looked like an export bug during development.
+
+```bash
+llama-simple -m out/qwen7b-forge-mixed.gguf -n 100 "def fibonacci(n):"   # correct
+llama-cli    -m out/qwen7b-forge-mixed.gguf -p "def fibonacci(n):"       # degenerate
+```
+
+Use a raw-completion path for base weights.
+
+## Caveat 4 — **perplexity does not predict code quality here**
+
+> **The mixed checkpoint reaches 9.4150 ppl (1.50x FP16) and still produces zero
+> syntactically valid Python across 8 standard prompts.**
+
+| | parses as Python | degenerate repetition |
 |---|---:|---:|
-| FP16 (baseline) | **10.40** | 1.0x |
-| Naive ternary, absmean scale | 506,714 | 48,700x |
-| Naive ternary, optimal scale | 404,730 | 38,900x |
-| + rotation (absmean) | 47,775 | 4,590x |
-| **FORGE (rotation + GPTQ + sequential)** | **172.27** | **16.6x** |
+| FP16 | **6 / 8** | 0 / 8 |
+| **FORGE mixed** | **0 / 8** | **3 / 8** |
 
-FORGE improves on naive ternary by **2,350x**. It is **not yet a usable model**: 172 ppl
-against FP16's 10.40 is a large gap, and no amount of framing changes that. See
-[Where the remaining error is](#where-the-remaining-error-is).
+Identical prompts, identical decoding path, identical seed. FP16's two non-parsing samples
+are truncated at the token budget, not broken; FORGE's failures are structural — dropped
+indentation, unclosed parentheses, repetition loops. Sampling with a repetition penalty
+does not rescue them. Full side-by-side transcripts: [SAMPLE_OUTPUTS.md](SAMPLE_OUTPUTS.md).
+
+**Consequence: perplexity was the wrong acceptance metric for a code model.** A 9–14 ppl
+band was met while the actual downstream capability was not. Any future gate should be
+task-based (HumanEval pass@1, or at minimum syntactic validity) rather than perplexity
+alone. This was flagged as a risk in the original project plan; it is now measured.
+
+---
+
+## How we got here — the ablation
+
+Qwen2.5-Coder-7B, 32 calibration sequences, 32 windows, FORGE PyTorch harness.
+
+| config | ppl | x FP16 | step gain | rel_error | attenuation | `ffn_down`/other flatness |
+|---|---:|---:|---:|---:|---:|---:|
+| FP16 baseline | 7.52 | 1.00x | — | — | 1.0000 | — |
+| naive ternary (absmean) | 24,632,412 | 3.3e6x | — | 0.5622 | 0.5713 | 5.29 / 6.57 |
+| naive ternary (optimal scale) | 52,292.70 | 6955x | 471x | 0.4252 | 0.8008 | 5.29 / 6.57 |
+| + rotation | 1,359.19 | 181x | 38.5x | 0.3849 | 0.8874 | 5.29 / 0.41 (13x) |
+| + GPTQ solver | 19.39 | 2.58x | **70.1x** | 0.2122 | 0.9728 | 5.29 / 0.41 (13x) |
+| + sequential (full FORGE) | 17.83 | 2.37x | 1.1x | 0.2001 | 0.9767 | 5.53 / 0.46 (12x) |
+
+The GPTQ solver is the dominant contributor at 7B. Sequential propagation adds only 1.1x
+here against being essential at 1.5B, because GPTQ alone already reaches 0.973 attenuation
+and there is little left for downstream layers to absorb — it costs 3x the forward passes
+for an 8% gain, so it is a cost lever on larger models.
+
+## Scale absorbs quantization error
+
+| | 1.5B | 7B |
+|---|---:|---:|
+| FP16 ppl | 10.40 | 7.59 |
+| FORGE pure-ternary ppl | 172.27 | 16.44 |
+| **degradation** | **16.6x** | **2.17x** |
+
+Identical code and hyperparameters. Parameter redundancy is worth ~7x in relative
+degradation — the single largest effect measured in this project.
+
+## The `ffn_down` outlier
+
+| | 1.5B | 7B |
+|---|---:|---:|
+| `ffn_down` Hessian flatness | 10.59 | 5.42 |
+| every other tensor | 0.51 | 0.44 |
+| **outlier ratio** | **20.8x** | **12.3x** |
+
+It dampens with scale but remains the worst-conditioned layer by an order of magnitude, and
+is the one layer the fusable rotations cannot reach (it reads the SwiGLU output).
+
+Unrotated ablation rows show `ffn_down` *below* average (5.29 vs 6.57). Not a
+contradiction: before rotation everything is badly conditioned and nothing stands out. The
+rotation flattens every reachable tensor to ~0.41 and leaves `ffn_down` where it was — it
+**exposes** the outlier rather than causing it.
+
+**Conditioning is not the whole story.** `ffn_up` has essentially the same reconstruction
+error as `ffn_down` (0.2622 vs 0.2646) at **12x lower flatness**. An online Hadamard fixes
+conditioning, so it would help `ffn_down` and do nothing for `ffn_up`. That caps the
+expected payoff from a custom-graph branch.
+
+## Two perplexity conventions, one ratio
+
+`llama-perplexity` scores only the second half of each window (`const int first = n_ctx/2`,
+`tools/perplexity/perplexity.cpp`). FORGE's PyTorch harness scores every token, which is
+strictly harder. Absolutes differ; the **ratio agrees to three digits** — a useful
+cross-check between independent implementations.
+
+| | FP16 | FORGE mixed | ratio |
+|---|---:|---:|---:|
+| llama.cpp (second half of window) | 6.2731 | 9.4150 | **1.50x** |
+| FORGE PyTorch (all tokens) | 7.5922 | 11.4022 | **1.50x** |
+
+Quote the ratio across tools, never the absolute.
+
+## Decode is bandwidth-bound at 7B, and was not at 1.5B
+
+If decode were bandwidth-bound, implied `GB/s = size x tok/s` would be constant.
+
+**7B:**
+
+| build | weights | tok/s | implied GB/s | speedup | ideal | efficiency |
+|---|---:|---:|---:|---:|---:|---:|
+| F16 | 15.24 GB | 34.51 | 526 | 1.00x | 1.00x | 100% |
+| Q4_K_M | 4.68 GB | 101.43 | 475 | 2.94x | 3.26x | 90% |
+| FORGE mixed | 3.51 GB | 120.87 | 424 | 3.50x | 4.34x | 81% |
+
+**1.5B:**
+
+| build | weights | tok/s | implied GB/s | speedup | ideal | efficiency |
+|---|---:|---:|---:|---:|---:|---:|
+| F16 | 3.09 GB | 141.6 | 438 | 1.00x | 1.00x | 100% |
+| Q4_K_M | 0.98 GB | 291.6 | 286 | 2.06x | 3.16x | 65% |
+| TQ2_0 | 0.53 GB | 327.7 | 174 | 2.31x | 5.84x | 40% |
+
+At 1.5B the working set is too small for bandwidth to dominate and a fixed per-token cost
+takes over. At 7B the format recovers **81%** of its ideal speedup against 40% at 1.5B.
 
 ## Cost
 
-| | |
-|---|---|
-| Quantization time | **597 s** (10 min) for 1.5B, 128 sequences |
-| Calibration capture alone | 195 s |
-| Peak Hessian residency | **378 MB** (one block at a time) |
-| Rotation fusion | 1.5 s |
+| | 1.5B | 7B |
+|---|---|---|
+| Quantization | ~10 min | 37 min (pure), 33 min (excl. `ffn_down`) |
+| Peak Hessian residency | 378 MB | 1744 MB |
+| Peak process RSS | ~8 GB | ~44 GB (float32 pipeline) |
+| Export (save + convert + quantize) | — | 60 s |
 
-Comfortably inside the 1-4 hour, single-consumer-GPU budget the project set out to hit.
+Excluding `ffn_down` also removes the 18944² Cholesky, ~80% of solver time: per-block
+solve drops from 15.4 s to 3.1 s. All well inside the 1–4 hour single-consumer-GPU budget.
 
-## Per-tensor breakdown
+## Measurement conditions
 
-`rel_error` is `||(W-Q)X|| / ||WX||` against calibration activations. `attenuation` is
-`||QX|| / ||WX||` — 1.0 is neutral, below 1.0 means the layer is losing gain.
-`H flatness` is `std(diag H)/mean(diag H)`, the outlier metric the rotation targets.
+Throughput is load-sensitive and an early benchmark set here was contaminated by an
+unrelated process, reading 6–14% low **while still showing plausible ~3% error bars** —
+steady contention produces tight bars just as an idle machine does. Tight error bars are
+evidence of stable conditions, not of an idle one. All throughput figures above are the
+mean of three independent runs on a confirmed-idle machine.
 
-| tensor | rel_error | attenuation | sparsity | H flatness |
-|---|---:|---:|---:|---:|
-| `attn_k` | 0.1372 | 0.9903 | 0.4519 | 0.5073 |
-| `attn_q` | 0.1638 | 0.9859 | 0.4529 | 0.5073 |
-| `ffn_gate` | 0.1730 | 0.9837 | 0.4549 | 0.5971 |
-| `attn_output` | 0.1915 | 0.9812 | 0.4533 | 0.7214 |
-| `ffn_down` | 0.2257 | 0.9744 | 0.4663 | **10.5866** |
-| `attn_v` | 0.2687 | 0.9626 | 0.4529 | 0.5073 |
-| `ffn_up` | 0.2924 | 0.9552 | 0.4554 | 0.5971 |
-| **mean** | **0.2075** | **0.9762** | 0.4553 | 2.0034 |
+Long-running wall-clock (quantization time) was *not* meaningfully affected; it is
+dominated by sustained work on the same device rather than by scheduling latency.
 
-## Rotation is exactly a no-op
+**Accuracy is load-independent** and this is verified, not assumed: `10.3999` and
+`404729.5582` reproduce to every digit across runs under different load, and per-block
+`rel_error` is bit-identical between runs.
 
-Verified on the real checkpoint (`forge verify-rotation`):
+## Reproducing
 
-| | |
-|---|---|
-| max \|logit diff\| | 1.04e-3 |
-| relative to \|logit\| | 3.15e-5 |
-| wikitext2 ppl before / after | 10.3976 / 10.3976 |
-| mean weight kurtosis | 6.50 → **4.39** (3.0 = Gaussian) |
+```bash
+uv venv --python 3.12 && uv pip install -e ".[dev]"
+git submodule update --init
+cmake -S llamacpp/llama.cpp -B llamacpp/llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=ON -DGGML_METAL=ON
+cmake --build llamacpp/llama.cpp/build -j
 
-## Attenuation, and what fixes it
+# the shipping checkpoint
+python -m forge.cli quantize --model Qwen/Qwen2.5-Coder-7B \
+    --nsamples 128 --factorization float32_gpu \
+    --exclude ffn_down --exclude-type q6_K \
+    --export out/qwen7b-forge-mixed.gguf
 
-Ternary reconstruction is an orthogonal projection onto the codebook, so `<W,Q> = ||Q||²`
-and every layer comes out short. Measured:
+# the ablation grid
+python bench/ablation.py --model Qwen/Qwen2.5-Coder-7B --nsamples 32 --limit 32
+```
 
-| | attenuation |
-|---|---:|
-| RTN, per layer | 0.9000 |
-| + per-channel least-squares rescale | 0.9012 (**alpha ~ 1.00 — a near no-op**) |
-| GPTQ | 0.9486 |
-| **GPTQ + sequential propagation** | **0.9762** |
-
-Scaling a projection up only raises its MSE, so this cannot be fixed inside the layer.
-Sequential propagation fixes it by letting each layer absorb its predecessors' shortfall.
-`quant/rescale.py` is kept for the diagnostic, not the correction.
-
----
-
-## Size and speed
-
-Sizes from llama.cpp's own quantizer on the same checkpoint:
-
-| build | size | vs F16 |
-|---|---:|---:|
-| F16 | 2.88 GiB | 1.0x |
-| Q4_K_M | 934.7 MiB | 3.2x |
-| **TQ2_0** | **505.3 MiB** | **5.8x** |
-
-`llama-bench`, M5 Max, Metal backend, 5 repetitions per run, **mean of 3 independent runs
-on an otherwise-idle machine** (see [Measurement conditions](#measurement-conditions)):
-
-| build | pp512 (t/s) | tg128 (t/s) |
-|---|---:|---:|
-| F16 | 11819 | 141.6 |
-| Q4_K_M | 11416 | 291.6 |
-| **TQ2_0** | **11903** | **327.7** |
-
-Run-to-run spread is ~1% and within-run error bars are ~0.5%.
-
-**Honest reading of the speed numbers.** TQ2_0 decodes **2.31x faster than F16** but only
-**12% faster than Q4_K_M**, despite being 1.85x smaller. At 0.5 GB on a machine with M5 Max
-bandwidth, decode is not bandwidth-bound — it is latency- and kernel-bound, so the memory
-saving does not convert into proportional throughput. The speed argument for ternary is
-therefore about *memory-constrained* deployment (phones, base M-series, fitting a larger
-model in the same RAM), not about raw throughput on a workstation. Expect a better ratio
-at 7B, where the working set is large enough for bandwidth to dominate again.
-
-Prefill (`pp512`) is essentially identical across all three builds, within 4%. That is
-expected: prefill is compute-bound, so the weight format barely matters there.
-
-### Why decode is not bandwidth-bound here
-
-If decode were bandwidth-bound, every build would saturate the same memory bandwidth and
-the implied `GB/s = model_size x tokens/s` would be constant. It is not:
-
-| build | weights | tok/s | implied GB/s | speedup vs F16 | if bandwidth-bound | efficiency |
-|---|---:|---:|---:|---:|---:|---:|
-| F16 | 3.09 GB | 141.6 | **438** | 1.00x | 1.00x | 100% |
-| Q4_K_M | 0.98 GB | 291.6 | **286** | 2.06x | 3.16x | 65% |
-| TQ2_0 | 0.53 GB | 327.7 | **174** | 2.31x | 5.84x | 40% |
-
-Implied bandwidth falls monotonically as the model shrinks — the signature of a fixed
-per-token cost (kernel launches, attention, KV cache, sampling) that does not shrink with
-the weights. F16 at 438 GB/s is plausibly near this machine's practical ceiling; TQ2_0 at
-174 GB/s is nowhere near it, so shrinking the weights further buys progressively less.
-
-This is a statement about *this model on this machine*, and it is the expected result for a
-0.5 GB working set on an M5 Max. The ternary format should recover much more of its ideal
-speedup at 7B, or on a device whose bandwidth is genuinely the constraint.
-
-### Measurement conditions
-
-Throughput numbers are sensitive to machine load and the first set taken for this project
-was contaminated — an unrelated heavy process was running. The contaminated figures ran
-6-8% low (F16 pp512 read 10994 against a true 11819) while still showing plausible-looking
-3% error bars, because *steady* contention produces tight bars just as an idle machine does.
-Tight error bars are evidence of stable conditions, not of an idle machine.
-
-The numbers above were re-taken across three independent runs after confirming load average
-had settled, and agree to ~1%. Any future throughput claim in this file should be taken the
-same way.
-
-**The quantization wall-clock was *not* meaningfully affected.** Compared like-for-like
-(blocks 1-8 of each run) the contended and idle runs differ by 8%, in the *opposite*
-direction — the idle re-run was marginally slower. What looks like contention within the
-original run is drift over its own duration: 17.1 s/block early against 19.6 s/block late,
-consistent with thermal behaviour rather than an external process. Treat the ~10 minute
-figure as accurate with roughly +/-10% run-to-run variance.
-
-The general lesson: `llama-bench`-style throughput was sensitive to load, and long-running
-wall-clock was not, because the latter is dominated by sustained work on the same device
-rather than by scheduling latency.
-
-**Accuracy numbers are unaffected by load.** Perplexity, relative error, attenuation and
-sparsity are deterministic given the seeds: `10.3999` and `404729.5582` reproduce to every
-digit across runs under different load. Contention changes wall-clock, never values.
-
-Note these use llama.cpp's own amax quantizer, so their *quality* is not FORGE's; they are
-here to measure the runtime, which is independent of how the scales were chosen.
-
----
-
-## Where the remaining error is
-
-`ffn_down`'s Hessian flatness is **10.59** against ~0.51 everywhere else — a 20x outlier.
-That is the one layer whose input the fusable rotations cannot reach: it reads the SwiGLU
-output, which is exactly where an online Hadamard (R4) would go. This is a measured,
-localized argument for the deferred tier-2 work, not a speculative one.
-
-Two candidate next steps, in order of expected value:
-
-1. **Online R4 Hadamard before `down_proj`.** Directly targets the measured outlier. Costs
-   a runtime graph change, so the output would no longer load on stock llama.cpp without a
-   patch — the central trade-off of the project.
-2. **Rank-r FP16 residual** (`W ~ s*T + AB^T`). Large accuracy recovery, but breaks the
-   stock-GGUF property and moves storage to a sidecar format.
-
-The 1.5B is also the hardest size to quantize — small models carry far less redundancy than
-7B. Running the 7B before drawing conclusions about the ceiling is worthwhile.
+Every checkpoint ships a `.forge.json` sidecar with the full reproducibility
+specification. Two runs with the same seed produce byte-identical output.

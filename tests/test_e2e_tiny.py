@@ -15,21 +15,24 @@ import torch
 from forge.calib.capture import LayerwiseRunner
 from forge.config import ForgeConfig
 from forge.models.registry import build_graph
-from forge.pack.tq2 import QK_K, dequantize_tq2_0, pack_tq2_0
+from forge.pack.tq2 import QK_K, dequantize_tq2_0
 from forge.quant.sequential import quantize_model
 from forge.rotate.fuse import fuse_rotations
 
 DEVICE = torch.device("cpu")
 
 
-def tiny_model(seed=0, tie=False):
+def tiny_model(seed=0, tie=False, vocab_size=512):
+    """A 2-layer Qwen2 with GQA. `vocab_size` defaults to something tiny for speed; the
+    export test must pass the real tokenizer's size, because convert_hf_to_gguf.py asserts
+    max(tokenizer.vocab.values()) < config.vocab_size."""
     from transformers import Qwen2Config, Qwen2ForCausalLM
 
     torch.manual_seed(seed)
     cfg = Qwen2Config(
         hidden_size=256, intermediate_size=512, num_hidden_layers=2,
         num_attention_heads=4, num_key_value_heads=2, head_dim=64,
-        vocab_size=512, max_position_embeddings=128,
+        vocab_size=vocab_size, max_position_embeddings=128,
         tie_word_embeddings=tie, attention_bias=True,
     )
     model = Qwen2ForCausalLM(cfg).to(torch.float32).eval()
@@ -180,13 +183,13 @@ def test_export_produces_a_loadable_gguf(tmp_path):
     except FileNotFoundError as exc:
         pytest.skip(str(exc))
 
-    model = tiny_model()
+    tok = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-1.5B")
+    model = tiny_model(vocab_size=len(tok))
     graph = build_graph(model.config)
     cfg = tiny_config()
     fuse_rotations(model, graph, seed=0, dtype=torch.float64)
     quantize_model(model, graph, ids_for(model), cfg, DEVICE, verbose=False)
 
-    tok = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-1.5B")
     out = export_gguf(model, tok, tmp_path / "tiny.gguf", cfg)
 
     assert out.exists() and out.stat().st_size > 0

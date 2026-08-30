@@ -29,7 +29,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-FORGE_VERSION = "0.1.0"
+from forge.pack.tq2 import QK_K
+
+FORGE_VERSION = "1.0.0"
 
 
 @dataclass
@@ -74,24 +76,62 @@ def _run(cmd: list[str], desc: str) -> None:
         raise RuntimeError(f"{desc} failed (exit {proc.returncode}):\n{tail}")
 
 
+def _llamacpp_revision() -> str:
+    """Pinned llama.cpp SHA -- the packing layout and quantizer come from it."""
+    try:
+        pin = Path(__file__).resolve().parents[2] / "llamacpp" / "PINNED_SHA"
+        return pin.read_text().strip()[:12] if pin.exists() else "unknown"
+    except OSError:
+        return "unknown"
+
+
 def forge_metadata(cfg, rotation_plan=None) -> dict[str, str]:
-    """The KV entries that make a FORGE checkpoint reproducible."""
+    """The full reproducibility specification for a FORGE checkpoint.
+
+    Everything needed to regenerate the identical file: the source model, the calibration
+    corpus and how it was sampled, every solver knob, the rotation seed, and the pinned
+    llama.cpp revision whose quantizer wrote the container. Two runs with the same values
+    produce byte-identical output.
+    """
     meta = {
+        # provenance
         "forge.version": FORGE_VERSION,
+        "forge.source_model": str(cfg.model),
+        "forge.llamacpp_revision": _llamacpp_revision(),
+        "forge.compute_dtype": str(cfg.dtype),
+        # calibration
+        "forge.calib.dataset": cfg.calib.dataset,
+        "forge.calib.split": "train",
+        "forge.calib.nsamples": str(cfg.calib.nsamples),
+        "forge.calib.seqlen": str(cfg.calib.seqlen),
+        "forge.calib.seed": str(cfg.calib.seed),
+        # solver
         "forge.solver": (
             f"{cfg.solver.method}_ternary"
             f"{'_sequential' if cfg.solver.sequential else ''}"
         ),
-        "forge.scale_rule": cfg.solver.scale_rule,
-        "forge.damping": str(cfg.solver.damping),
-        "forge.calib.dataset": cfg.calib.dataset,
-        "forge.calib.nsamples": str(cfg.calib.nsamples),
-        "forge.calib.seqlen": str(cfg.calib.seqlen),
-        "forge.calib.seed": str(cfg.calib.seed),
+        "forge.solver.method": cfg.solver.method,
+        "forge.solver.scale_rule": cfg.solver.scale_rule,
+        "forge.solver.damping": str(cfg.solver.damping),
+        "forge.solver.sequential": str(bool(cfg.solver.sequential)).lower(),
+        "forge.solver.rescale": str(bool(cfg.solver.rescale)).lower(),
+        "forge.solver.factorization": cfg.solver.factorization,
+        "forge.solver.block_size": str(QK_K),
+        "forge.solver.excluded_tensors": ",".join(cfg.solver.exclude) or "none",
+        # rotation
+        "forge.rotation.enabled": str(bool(cfg.rotation.enabled)).lower(),
         "forge.rotation.kind": cfg.rotation.kind if cfg.rotation.enabled else "none",
         "forge.rotation.seed": str(cfg.rotation.seed),
+        "forge.rotation.head_dim_rotation": str(bool(cfg.rotation.rotate_head_dim)).lower(),
+        # evaluation convention, so a reported ppl is never ambiguous
+        "forge.eval.convention": "all_tokens",
+        "forge.eval.note": (
+            "llama-perplexity scores only the second half of each window "
+            "(first = n_ctx/2); compare ratios, not absolutes"
+        ),
     }
     if rotation_plan is not None:
+        meta["forge.rotation.hidden_size"] = str(rotation_plan.hidden_size)
         meta["forge.rotation.head_dim"] = str(rotation_plan.head_dim or 0)
     return meta
 

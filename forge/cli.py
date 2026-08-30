@@ -16,14 +16,14 @@ from forge.eval.perplexity import perplexity
 from forge.eval.report import markdown_table, write_report
 from forge.models.registry import build_graph
 from forge.pack.gguf_writer import export_gguf
-from forge.quant.sequential import quantize_model
-from forge.rotate.fuse import fuse_rotations
 from forge.quant.apply import (
     hessian_relative_error,
     quantize_model_rtn,
     quantize_weight,
     weight_relative_error,
 )
+from forge.quant.sequential import quantize_model
+from forge.rotate.fuse import fuse_rotations
 
 DTYPES = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
 
@@ -52,7 +52,8 @@ def cmd_baseline(args) -> None:
     t0 = time.time()
     model, tok, graph = load_model(cfg)
     print(graph.summary(), flush=True)
-    print(f"\nloaded in {time.time()-t0:.1f}s; capturing {cfg.calib.nsamples} sequences", flush=True)
+    print(f"\nloaded in {time.time()-t0:.1f}s; "
+          f"capturing {cfg.calib.nsamples} sequences", flush=True)
 
     ids = calibration_batch(tok, cfg.calib.dataset, cfg.calib.nsamples, cfg.calib.seqlen,
                             cfg.calib.seed)

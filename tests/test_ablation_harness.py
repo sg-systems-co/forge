@@ -13,7 +13,7 @@ FIELDS = ["label", "rotate", "method", "scale_rule", "sequential", "rescale"]
 
 
 def as_dict(spec):
-    return dict(zip(FIELDS, spec))
+    return dict(zip(FIELDS, spec, strict=False))
 
 
 def test_grid_starts_from_an_unquantized_reference():
@@ -36,7 +36,7 @@ def test_each_cumulative_step_adds_exactly_one_component():
     comparison starts from the better of the two naive baselines.
     """
     cumulative = GRID[2:]  # from "naive ternary (optimal scale)" onward
-    for prev, cur in zip(cumulative, cumulative[1:]):
+    for prev, cur in zip(cumulative, cumulative[1:], strict=False):
         a, b = as_dict(prev), as_dict(cur)
         changed = [f for f in FIELDS[1:] if a[f] != b[f]]
         assert len(changed) >= 1, f"{b['label']} changes nothing from {a['label']}"

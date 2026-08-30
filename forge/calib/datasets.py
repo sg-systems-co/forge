@@ -26,7 +26,8 @@ def _c4_windows(tokenizer, nsamples: int, seqlen: int, seed: int) -> torch.Tenso
     from datasets import load_dataset
 
     stream = load_dataset(
-        C4[0], C4[1], split="train", streaming=True, data_files={"train": "en/c4-train.00000-of-01024.json.gz"}
+        C4[0], C4[1], split="train", streaming=True,
+        data_files={"train": "en/c4-train.00000-of-01024.json.gz"},
     )
     gen = torch.Generator().manual_seed(seed)
     out = []

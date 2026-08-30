@@ -9,6 +9,19 @@ import pytest
 from forge.config import ForgeConfig
 from forge.pack.gguf_writer import FORGE_VERSION, ExportPaths, forge_metadata
 
+# Every knob that changes the produced bytes must appear in the sidecar, or a checkpoint
+# is not reproducible from it.
+REQUIRED_KEYS = {
+    "forge.version", "forge.source_model", "forge.llamacpp_revision", "forge.compute_dtype",
+    "forge.calib.dataset", "forge.calib.split", "forge.calib.nsamples",
+    "forge.calib.seqlen", "forge.calib.seed",
+    "forge.solver.method", "forge.solver.scale_rule", "forge.solver.damping",
+    "forge.solver.sequential", "forge.solver.rescale", "forge.solver.factorization",
+    "forge.solver.block_size", "forge.solver.excluded_tensors",
+    "forge.rotation.enabled", "forge.rotation.kind", "forge.rotation.seed",
+    "forge.eval.convention",
+}
+
 
 def test_metadata_records_everything_needed_to_reproduce():
     cfg = ForgeConfig()
@@ -16,12 +29,31 @@ def test_metadata_records_everything_needed_to_reproduce():
     cfg.rotation.seed = 99
     meta = forge_metadata(cfg)
 
+    missing = REQUIRED_KEYS - set(meta)
+    assert not missing, f"sidecar is missing {sorted(missing)}"
+
     assert meta["forge.version"] == FORGE_VERSION
     assert meta["forge.calib.nsamples"] == "256"
     assert meta["forge.rotation.seed"] == "99"
     assert meta["forge.rotation.kind"] == "randomized_hadamard"
     assert meta["forge.solver"] == "gptq_ternary_sequential"
     assert all(isinstance(v, str) for v in meta.values()), "GGUF KV values must be strings"
+
+
+def test_metadata_records_the_pinned_llamacpp_revision():
+    """The packing layout and the quantizer both come from llama.cpp, so the checkpoint is
+    only reproducible if the revision that wrote it is recorded."""
+    rev = forge_metadata(ForgeConfig())["forge.llamacpp_revision"]
+    assert rev != "unknown" and len(rev) == 12, rev
+
+
+def test_metadata_records_excluded_tensors_and_eval_convention():
+    cfg = ForgeConfig()
+    assert forge_metadata(cfg)["forge.solver.excluded_tensors"] == "none"
+    cfg.solver.exclude = ("ffn_down",)
+    assert forge_metadata(cfg)["forge.solver.excluded_tensors"] == "ffn_down"
+    # Perplexity is meaningless without saying which convention produced it.
+    assert forge_metadata(cfg)["forge.eval.convention"] == "all_tokens"
 
 
 def test_metadata_records_rotation_disabled():
