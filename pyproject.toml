@@ -1,0 +1,49 @@
+[project]
+name = "forge-ptq"
+version = "0.1.0"
+description = "Training-free ternary (1.58-bit) post-training quantization for open-weight LLMs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+    "torch>=2.4",
+    "transformers>=4.45",
+    "safetensors>=0.4",
+    "datasets>=2.20",
+    "numpy>=1.26",
+    "gguf>=0.10",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.5",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+forge = "forge.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["forge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: requires downloading a model or long compute",
+    "needs_ggml: requires a built libggml for bit-exactness checks",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

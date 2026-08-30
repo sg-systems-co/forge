@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Build artifacts
+build/
+native/build/
+*.dylib
+*.so
+*.o
+
+# Models and conversion outputs
+*.gguf
+*.safetensors
+models/
+out/
+
+# Reports are committed deliberately; raw per-layer dumps are not
+docs/m1_per_layer.json
