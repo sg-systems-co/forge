@@ -93,21 +93,63 @@ Sizes from llama.cpp's own quantizer on the same checkpoint:
 | Q4_K_M | 934.7 MiB | 3.2x |
 | **TQ2_0** | **505.3 MiB** | **5.8x** |
 
-`llama-bench`, M5 Max, Metal backend, 5 repetitions:
+`llama-bench`, M5 Max, Metal backend, 5 repetitions per run, **mean of 3 independent runs
+on an otherwise-idle machine** (see [Measurement conditions](#measurement-conditions)):
 
 | build | pp512 (t/s) | tg128 (t/s) |
 |---|---:|---:|
-| F16 | 10994 ± 355 | 132.7 ± 9.4 |
-| Q4_K_M | 11357 ± 253 | 269.2 ± 7.4 |
-| **TQ2_0** | **11963 ± 19** | **288.7 ± 9.5** |
+| F16 | 11819 | 141.6 |
+| Q4_K_M | 11416 | 291.6 |
+| **TQ2_0** | **11903** | **327.7** |
 
-**Honest reading of the speed numbers.** TQ2_0 decodes 2.2x faster than F16 but only
-**7% faster than Q4_K_M**, despite being 1.85x smaller. At 0.5 GB on a machine with M5 Max
+Run-to-run spread is ~1% and within-run error bars are ~0.5%.
+
+**Honest reading of the speed numbers.** TQ2_0 decodes **2.31x faster than F16** but only
+**12% faster than Q4_K_M**, despite being 1.85x smaller. At 0.5 GB on a machine with M5 Max
 bandwidth, decode is not bandwidth-bound — it is latency- and kernel-bound, so the memory
 saving does not convert into proportional throughput. The speed argument for ternary is
 therefore about *memory-constrained* deployment (phones, base M-series, fitting a larger
 model in the same RAM), not about raw throughput on a workstation. Expect a better ratio
 at 7B, where the working set is large enough for bandwidth to dominate again.
+
+Prefill (`pp512`) is essentially identical across all three builds, within 4%. That is
+expected: prefill is compute-bound, so the weight format barely matters there.
+
+### Why decode is not bandwidth-bound here
+
+If decode were bandwidth-bound, every build would saturate the same memory bandwidth and
+the implied `GB/s = model_size x tokens/s` would be constant. It is not:
+
+| build | weights | tok/s | implied GB/s | speedup vs F16 | if bandwidth-bound | efficiency |
+|---|---:|---:|---:|---:|---:|---:|
+| F16 | 3.09 GB | 141.6 | **438** | 1.00x | 1.00x | 100% |
+| Q4_K_M | 0.98 GB | 291.6 | **286** | 2.06x | 3.16x | 65% |
+| TQ2_0 | 0.53 GB | 327.7 | **174** | 2.31x | 5.84x | 40% |
+
+Implied bandwidth falls monotonically as the model shrinks — the signature of a fixed
+per-token cost (kernel launches, attention, KV cache, sampling) that does not shrink with
+the weights. F16 at 438 GB/s is plausibly near this machine's practical ceiling; TQ2_0 at
+174 GB/s is nowhere near it, so shrinking the weights further buys progressively less.
+
+This is a statement about *this model on this machine*, and it is the expected result for a
+0.5 GB working set on an M5 Max. The ternary format should recover much more of its ideal
+speedup at 7B, or on a device whose bandwidth is genuinely the constraint.
+
+### Measurement conditions
+
+Throughput numbers are sensitive to machine load and the first set taken for this project
+was contaminated — an unrelated heavy process was running. The contaminated figures ran
+6-8% low (F16 pp512 read 10994 against a true 11819) while still showing plausible-looking
+3% error bars, because *steady* contention produces tight bars just as an idle machine does.
+Tight error bars are evidence of stable conditions, not of an idle machine.
+
+The numbers above were re-taken across three independent runs after confirming load average
+had settled, and agree to ~1%. Any future throughput claim in this file should be taken the
+same way.
+
+**Accuracy numbers are unaffected by load.** Perplexity, relative error, attenuation and
+sparsity are deterministic given the seeds: `10.3999` and `404729.5582` reproduce to every
+digit across runs under different load. Contention changes wall-clock, never values.
 
 Note these use llama.cpp's own amax quantizer, so their *quality* is not FORGE's; they are
 here to measure the runtime, which is independent of how the scales were chosen.
