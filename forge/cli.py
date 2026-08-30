@@ -236,7 +236,9 @@ def cmd_quantize(args) -> None:
 
     if args.export:
         t0 = time.time()
-        path = export_gguf(model, tok, args.export, cfg, rotation_plan=plan)
+        tensor_types = {stem: args.exclude_type for stem in cfg.solver.exclude}
+        path = export_gguf(model, tok, args.export, cfg, rotation_plan=plan,
+                           tensor_types=tensor_types or None)
         size_gb = path.stat().st_size / 1e9
         print(f"exported {path} ({size_gb:.2f} GB) in {time.time()-t0:.1f}s")
 
@@ -297,6 +299,8 @@ def main() -> None:
     p.add_argument("--export", help="write a stock TQ2_0 GGUF here")
     p.add_argument("--exclude", nargs="*", metavar="STEM",
                    help="tensor stems to leave un-ternarized, e.g. ffn_down")
+    p.add_argument("--exclude-type", default="q6_K",
+                   help="ggml type for excluded tensors on export (default q6_K)")
     p.set_defaults(func=cmd_quantize)
 
     args = parser.parse_args()

@@ -105,11 +105,17 @@ def export_gguf(
     paths: ExportPaths | None = None,
     workdir: str | Path | None = None,
     keep_intermediate: bool = False,
+    tensor_types: dict[str, str] | None = None,
 ) -> Path:
     """Write a stock TQ2_0 GGUF for a model whose weights are already exactly ternary.
 
     The model must be the *reconstruction* (s * t in float), which is what
     forge.quant.sequential.quantize_model leaves behind.
+
+    `tensor_types` maps a GGUF tensor stem to a ggml type for tensors that were left out
+    of ternarization (see SolverConfig.exclude), e.g. {"ffn_down": "q6_K"}. These become
+    `--tensor-type` overrides, which stock llama-quantize supports -- so a mixed-precision
+    FORGE checkpoint is still an ordinary GGUF that unmodified llama.cpp loads.
     """
     paths = paths or ExportPaths.default()
     paths.check()
@@ -132,16 +138,21 @@ def export_gguf(
              "--outfile", str(f16_path), "--outtype", "f16"],
             "convert_hf_to_gguf",
         )
-        _run(
-            [str(paths.quantize_bin), str(f16_path), str(out_path), "TQ2_0", "8"],
-            "llama-quantize",
-        )
+        quantize_cmd = [str(paths.quantize_bin)]
+        for stem, ggml_type in (tensor_types or {}).items():
+            quantize_cmd += ["--tensor-type", f"{stem}={ggml_type}"]
+        quantize_cmd += [str(f16_path), str(out_path), "TQ2_0", "8"]
+        _run(quantize_cmd, "llama-quantize")
 
         # Upstream's gguf_new_metadata.py only exposes a fixed set of general.* flags, so
         # FORGE's custom keys go in a sidecar next to the GGUF rather than being forced
         # into fields that mean something else. The GGUF itself stays exactly what stock
         # llama.cpp expects.
         meta = forge_metadata(cfg, rotation_plan)
+        if tensor_types:
+            meta["forge.tensor_types"] = ",".join(
+                f"{k}={v}" for k, v in sorted(tensor_types.items())
+            )
         out_path.with_suffix(".forge.json").write_text(json.dumps(meta, indent=2))
 
         return out_path
