@@ -99,7 +99,8 @@ def quantize_model(
 
             if solver.method == "gptq":
                 result = gptq_quantize_layer(
-                    weight, hessian, damping=solver.damping, scale_rule=solver.scale_rule
+                    weight, hessian, damping=solver.damping, scale_rule=solver.scale_rule,
+                    factorization=solver.factorization,
                 )
             elif solver.method == "rtn":
                 result = rtn_quantize_layer(weight, hessian, scale_rule=solver.scale_rule)

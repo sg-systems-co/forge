@@ -167,12 +167,19 @@ class LayerwiseRunner:
             layer = self.model.model.layers[index]
 
             with accumulate_hessians(layer, block, self.device) as accs:
-                self._forward_block(layer, inputs_q)
+                hessian_pass = self._forward_block(layer, inputs_q)
 
-            # Step 2: teacher output, while the weights are still pristine. This must
-            # happen in BOTH modes -- it is the only chance to see the unquantized
-            # output, and non-sequential mode is *defined* by feeding it forward.
-            outputs_fp = self._forward_block(layer, inputs_fp)
+            # Step 2: teacher output, while the weights are still pristine. This is the
+            # only chance to see the unquantized output, and non-sequential mode is
+            # *defined* by feeding it forward.
+            #
+            # In non-sequential mode the two buffers are the same tensor, so the pass
+            # above already computed exactly this -- reuse it rather than paying for an
+            # identical second forward over the whole calibration set.
+            outputs_fp = (
+                self._forward_block(layer, inputs_fp) if sequential else hessian_pass
+            )
+            del hessian_pass
 
             yield BlockPass(
                 index=index,

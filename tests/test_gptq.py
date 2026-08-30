@@ -216,3 +216,59 @@ def test_inverse_cholesky_reconstructs_inverse():
     assert torch.all(torch.triu(c) == c)
     torch.testing.assert_close(c.T @ c, torch.linalg.inv(damp(h.double(), 0.01)), atol=1e-8,
                                rtol=1e-6)
+
+
+# ------------------------------------------------------------------ factorization
+
+
+def test_factorization_modes_all_produce_valid_factors():
+    n = QK_K
+    h = correlated_hessian(n, ntokens=512)
+    for mode in ("float64_cpu", "float32_cpu", "float32_gpu"):
+        c = inverse_cholesky(h, 0.01, mode)
+        assert torch.isfinite(c).all(), mode
+        assert torch.all(torch.triu(c) == c), mode
+
+
+def test_unknown_factorization_is_rejected():
+    with pytest.raises(ValueError, match="unknown factorization"):
+        inverse_cholesky(torch.eye(8), 0.01, "float128_quantum")
+
+
+def test_factorization_precision_barely_changes_the_result():
+    """float32 factorization is ~5x faster at 7B scale; it must not change the answer.
+
+    The tolerance is on the *reconstruction error*, which is what the pipeline optimizes.
+    A handful of individual codes may flip near a rounding boundary without mattering.
+    """
+    n = QK_K * 4
+    w = torch.randn(64, n)
+    h = correlated_hessian(n, ntokens=2048)
+
+    ref = gptq_quantize_layer(w, h, factorization="float64_cpu")
+    fast = gptq_quantize_layer(w, h, factorization="float32_cpu")
+
+    rel = abs(ref.relative_error - fast.relative_error) / ref.relative_error
+    assert rel < 1e-3, rel
+    assert float((ref.codes == fast.codes).float().mean()) > 0.95
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs MPS")
+def test_device_move_precedes_dtype_cast():
+    """Regression: h.to("cpu", torch.float64) on an MPS tensor casts to float64 while
+    still on MPS -- which has no float64 -- and yields garbage instead of raising. The
+    corruption only surfaces later as a bogus "not positive-definite" Cholesky failure,
+    so it is pinned here where the cause is visible.
+    """
+    n = 512
+    x = torch.randn(2048, n, device="mps")
+    h = (2.0 / 2048) * (x.T @ x)
+    assert torch.diag(h).min() > 0  # genuinely positive-definite before conversion
+
+    c = inverse_cholesky(h, 0.01, "float64_cpu")
+    assert torch.isfinite(c).all()
+    assert c.dtype == torch.float64 and c.device.type == "cpu"
+
+    # And the values must match factorizing a Hessian that was on CPU all along.
+    c_cpu = inverse_cholesky(h.cpu().double(), 0.01, "float64_cpu")
+    torch.testing.assert_close(c, c_cpu, rtol=1e-6, atol=1e-9)

@@ -25,16 +25,15 @@ from forge.eval.report import markdown_table
 from forge.quant.sequential import quantize_model
 from forge.rotate.fuse import fuse_rotations
 
-# (label, rotate, method, scale_rule, sequential, rescale)
+# (label, rotate, method, scale_rule, sequential, rescale). `method=None` means "do not
+# quantize at all" -- the FP16 reference row.
 GRID = [
-    ("RTN absmean, no rotation",        False, "rtn",  "absmean", False, False),
-    ("RTN optimal, no rotation",        False, "rtn",  "optimal", False, False),
-    ("+ rotation",                      True,  "rtn",  "optimal", False, False),
-    ("+ GPTQ solver",                   True,  "gptq", "optimal", False, False),
-    ("+ sequential propagation",        True,  "gptq", "optimal", True,  False),
-    ("+ channel rescale (full FORGE)",  True,  "gptq", "optimal", True,  True),
-    ("full FORGE, no rotation",         False, "gptq", "optimal", True,  True),
-    ("full FORGE, absmean scale",       True,  "gptq", "absmean", True,  True),
+    ("FP16 baseline",                  False, None,   "optimal", False, False),
+    ("naive ternary (absmean)",        False, "rtn",  "absmean", False, False),
+    ("naive ternary (optimal scale)",  False, "rtn",  "optimal", False, False),
+    ("+ rotation",                     True,  "rtn",  "optimal", False, False),
+    ("+ GPTQ solver",                  True,  "gptq", "optimal", False, False),
+    ("+ sequential (full FORGE)",      True,  "gptq", "optimal", True,  True),
 ]
 
 
@@ -42,8 +41,9 @@ def run_one(spec, args) -> dict:
     label, rotate, method, scale_rule, sequential, rescale = spec
     cfg = ForgeConfig(model=args.model, dtype="float32")
     cfg.calib.nsamples = args.nsamples
+    cfg.solver.factorization = args.factorization
     cfg.rotation.enabled = rotate
-    cfg.solver.method = method
+    cfg.solver.method = method or "rtn"
     cfg.solver.scale_rule = scale_rule
     cfg.solver.sequential = sequential
     cfg.solver.rescale = rescale
@@ -54,25 +54,32 @@ def run_one(spec, args) -> dict:
         fuse_rotations(model, graph, seed=cfg.rotation.seed, kind=cfg.rotation.kind,
                        dtype=torch.float32)
 
-    ids = calibration_batch(tok, cfg.calib.dataset, cfg.calib.nsamples, cfg.calib.seqlen,
-                            cfg.calib.seed)
     t0 = time.time()
-    report = quantize_model(model, graph, ids, cfg, device, verbose=False)
+    row = {"config": label}
+
+    if method is None:
+        row.update(rel_error=0.0, attenuation=1.0, ffn_down_flatness=float("nan"))
+    else:
+        ids = calibration_batch(tok, cfg.calib.dataset, cfg.calib.nsamples, cfg.calib.seqlen,
+                                cfg.calib.seed)
+        report = quantize_model(model, graph, ids, cfg, device, verbose=args.verbose)
+        down = [r.flatness for r in report.records if r.tensor == "ffn_down"]
+        others = [r.flatness for r in report.records if r.tensor != "ffn_down"]
+        row.update(
+            rel_error=round(report.mean("rel_error"), 4),
+            attenuation=round(report.mean("attenuation"), 4),
+            ffn_down_flatness=round(sum(down) / len(down), 3),
+            other_flatness=round(sum(others) / len(others), 3),
+        )
 
     windows = evaluation_batch(tok, cfg.calib.seqlen)[: args.limit]
-    ppl = perplexity(model, windows, device, progress=False)
+    row["ppl"] = round(perplexity(model, windows, device, progress=False), 3)
+    row["minutes"] = round((time.time() - t0) / 60, 1)
 
     del model
     if torch.backends.mps.is_available():
         torch.mps.empty_cache()
-
-    return {
-        "config": label,
-        "ppl": round(ppl, 3),
-        "rel_error": round(report.mean("rel_error"), 4),
-        "attenuation": round(report.mean("attenuation"), 4),
-        "minutes": round((time.time() - t0) / 60, 1),
-    }
+    return row
 
 
 def main() -> None:
@@ -81,10 +88,15 @@ def main() -> None:
     ap.add_argument("--nsamples", type=int, default=32)
     ap.add_argument("--limit", type=int, default=16)
     ap.add_argument("--out", default="docs/results_ablation.md")
+    ap.add_argument("--factorization", default="float32_gpu",
+                    choices=["float64_cpu", "float32_cpu", "float32_gpu"])
+    ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--only", type=int, nargs="*", help="run only these grid indices")
     args = ap.parse_args()
 
+    grid = [GRID[i] for i in args.only] if args.only else GRID
     rows = []
-    for spec in GRID:
+    for spec in grid:
         print(f"=== {spec[0]} ===", flush=True)
         try:
             row = run_one(spec, args)
@@ -94,7 +106,8 @@ def main() -> None:
         print(f"    {row}", flush=True)
         Path(args.out).with_suffix(".json").write_text(json.dumps(rows, indent=2))
 
-    table = markdown_table(rows, ["config", "ppl", "rel_error", "attenuation", "minutes"])
+    table = markdown_table(rows, ["config", "ppl", "rel_error", "attenuation",
+                                  "ffn_down_flatness", "other_flatness", "minutes"])
     Path(args.out).write_text(
         f"# Milestone 2b -- ablation\n\n"
         f"Model: `{args.model}`, {args.nsamples} calibration sequences, "

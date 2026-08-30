@@ -186,7 +186,7 @@ def _mean_kurtosis(model, graph) -> float:
 def cmd_quantize(args) -> None:
     """Milestones 2b/3: rotate, then solve layer by layer, then report and evaluate."""
     cfg = ForgeConfig.load(args.config) if args.config else ForgeConfig(model=args.model)
-    for key in ("method", "scale_rule", "damping"):
+    for key in ("method", "scale_rule", "damping", "factorization"):
         if getattr(args, key, None) is not None:
             setattr(cfg.solver, key, getattr(args, key))
     if args.no_rotate:
@@ -284,6 +284,8 @@ def main() -> None:
     p.add_argument("--method", choices=["gptq", "rtn"])
     p.add_argument("--scale-rule", dest="scale_rule", choices=["optimal", "absmean"])
     p.add_argument("--damping", type=float)
+    p.add_argument("--factorization",
+                   choices=["float64_cpu", "float32_cpu", "float32_gpu"])
     p.add_argument("--dtype", choices=list(DTYPES))
     p.add_argument("--no-rotate", action="store_true")
     p.add_argument("--no-sequential", action="store_true")

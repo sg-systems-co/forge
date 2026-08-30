@@ -70,6 +70,7 @@ def gptq_quantize_layer(
     block: int = QK_K,
     damping: float = 0.01,
     scale_rule: str = "optimal",
+    factorization: str = "float64_cpu",
 ) -> LayerResult:
     """Quantize one linear layer's weights against its calibration Hessian.
 
@@ -85,9 +86,9 @@ def gptq_quantize_layer(
     device = weight.device
     w_orig = weight.float()
 
-    # Factorize on CPU in float64: MPS lacks a float64 Cholesky, and this is the one step
-    # where conditioning actually matters.
-    hinv = inverse_cholesky(hessian.cpu().double(), damping).to(device, torch.float32)
+    # This is the one step where conditioning genuinely matters, so the precision is a
+    # config choice rather than an assumption. See FACTORIZATIONS in calib/hessian.py.
+    hinv = inverse_cholesky(hessian, damping, factorization).to(device, torch.float32)
 
     residual = w_orig.clone()
     codes = torch.zeros((out_features, n), dtype=torch.int8, device=device)

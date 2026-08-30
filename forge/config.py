@@ -31,6 +31,7 @@ class SolverConfig:
     damping: float = 0.01
     sequential: bool = True
     rescale: bool = True
+    factorization: str = "float64_cpu"
 
 
 @dataclass
