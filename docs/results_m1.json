@@ -1,0 +1,51 @@
+[
+  {
+    "tensor": "attn_k",
+    "absmean (H-weighted)": 0.6015890091657639,
+    "optimal (H-weighted)": 0.46565892015184673,
+    "absmean (weight-space)": 0.5412131313766751,
+    "optimal (weight-space)": 0.4593523144721985
+  },
+  {
+    "tensor": "attn_output",
+    "absmean (H-weighted)": 0.5654433816671371,
+    "optimal (H-weighted)": 0.4762365658368383,
+    "absmean (weight-space)": 0.5321639882666724,
+    "optimal (weight-space)": 0.4493170093212809
+  },
+  {
+    "tensor": "attn_q",
+    "absmean (H-weighted)": 0.553741135767528,
+    "optimal (H-weighted)": 0.4413899470652853,
+    "absmean (weight-space)": 0.5344365601028714,
+    "optimal (weight-space)": 0.4508760507617678
+  },
+  {
+    "tensor": "attn_v",
+    "absmean (H-weighted)": 0.5784970191972596,
+    "optimal (H-weighted)": 0.4791209985102926,
+    "absmean (weight-space)": 0.5545174649783543,
+    "optimal (weight-space)": 0.4681829033153398
+  },
+  {
+    "tensor": "ffn_down",
+    "absmean (H-weighted)": 0.5947143478052956,
+    "optimal (H-weighted)": 0.4526068302137511,
+    "absmean (weight-space)": 0.5293270008904594,
+    "optimal (weight-space)": 0.44996669037001474
+  },
+  {
+    "tensor": "ffn_gate",
+    "absmean (H-weighted)": 0.4954685260142599,
+    "optimal (H-weighted)": 0.3513469696044922,
+    "absmean (weight-space)": 0.5248407636369977,
+    "optimal (weight-space)": 0.4451402138386454
+  },
+  {
+    "tensor": "ffn_up",
+    "absmean (H-weighted)": 0.5330904945731163,
+    "optimal (H-weighted)": 0.4563728741237095,
+    "absmean (weight-space)": 0.5247009353978294,
+    "optimal (weight-space)": 0.4443951387490545
+  }
+]
