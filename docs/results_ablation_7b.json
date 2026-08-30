@@ -6,5 +6,50 @@
     "ffn_down_flatness": NaN,
     "ppl": 7.519,
     "minutes": 1.5
+  },
+  {
+    "config": "naive ternary (absmean)",
+    "rel_error": 0.5622,
+    "attenuation": 0.5713,
+    "ffn_down_flatness": 5.289,
+    "other_flatness": 6.572,
+    "ppl": 24632412.359,
+    "minutes": 7.0
+  },
+  {
+    "config": "naive ternary (optimal scale)",
+    "rel_error": 0.4252,
+    "attenuation": 0.8008,
+    "ffn_down_flatness": 5.289,
+    "other_flatness": 6.572,
+    "ppl": 52292.697,
+    "minutes": 7.7
+  },
+  {
+    "config": "+ rotation",
+    "rel_error": 0.3849,
+    "attenuation": 0.8874,
+    "ffn_down_flatness": 5.289,
+    "other_flatness": 0.405,
+    "ppl": 1359.186,
+    "minutes": 7.2
+  },
+  {
+    "config": "+ GPTQ solver",
+    "rel_error": 0.2122,
+    "attenuation": 0.9728,
+    "ffn_down_flatness": 5.289,
+    "other_flatness": 0.405,
+    "ppl": 19.394,
+    "minutes": 12.0
+  },
+  {
+    "config": "+ sequential (full FORGE)",
+    "rel_error": 0.2001,
+    "attenuation": 0.9767,
+    "ffn_down_flatness": 5.525,
+    "other_flatness": 0.458,
+    "ppl": 17.834,
+    "minutes": 16.2
   }
 ]

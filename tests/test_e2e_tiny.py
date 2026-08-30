@@ -192,3 +192,39 @@ def test_export_produces_a_loadable_gguf(tmp_path):
     assert out.exists() and out.stat().st_size > 0
     assert out.with_suffix(".forge.json").exists()
     assert out.read_bytes()[:4] == b"GGUF"
+
+
+def test_exclude_leaves_named_tensors_untouched():
+    """`--exclude ffn_down` must leave those weights bit-identical and quantize the rest.
+
+    This is the stock-GGUF-compatible lever for the worst-conditioned layer: it costs
+    memory (ffn_down is 29% of the 7B's ternary parameters) but needs no graph change,
+    unlike an online rotation.
+    """
+    model = tiny_model()
+    graph = build_graph(model.config)
+    cfg = tiny_config()
+    cfg.solver.exclude = ("ffn_down",)
+
+    fuse_rotations(model, graph, seed=0, dtype=torch.float64)
+    before = {
+        s.name: model.get_submodule(s.name).weight.data.clone() for s in graph.all_linears
+    }
+    report = quantize_model(model, graph, ids_for(model), cfg, DEVICE, verbose=False)
+
+    assert not any(r.tensor == "ffn_down" for r in report.records)
+    assert len(report.records) == graph.num_layers * 6
+
+    for spec in graph.all_linears:
+        after = model.get_submodule(spec.name).weight.data
+        if spec.gguf_name.split(".", 2)[-1].rsplit(".", 1)[0] == "ffn_down":
+            torch.testing.assert_close(after, before[spec.name])  # untouched
+        else:
+            assert not torch.allclose(after, before[spec.name]), spec.name  # quantized
+
+
+def test_exclude_nothing_is_the_default():
+    model = tiny_model()
+    graph = build_graph(model.config)
+    report = quantize_model(model, graph, ids_for(model), tiny_config(), DEVICE, verbose=False)
+    assert len(report.records) == graph.num_layers * 7

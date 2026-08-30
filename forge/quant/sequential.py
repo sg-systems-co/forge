@@ -93,6 +93,8 @@ def quantize_model(
         t_block = time.time()
 
         for spec in block_pass.block.linears:
+            if _tensor_kind(spec.gguf_name) in solver.exclude:
+                continue
             module = model.get_submodule(spec.name)
             weight = module.weight.data.float()
             hessian = block_pass.hessians[spec.name].finalize()
@@ -126,8 +128,11 @@ def quantize_model(
             del hessian, weight, recon
 
         if verbose:
-            recent = report.records[-len(block_pass.block.linears):]
-            mean_err = sum(r.rel_error for r in recent) / len(recent)
+            per_block = len(block_pass.block.linears) - len(solver.exclude)
+            recent = report.records[-per_block:] if per_block else []
+            mean_err = (
+                sum(r.rel_error for r in recent) / len(recent) if recent else float("nan")
+            )
             print(
                 f"  block {block_pass.index:2d}/{graph.num_layers}  "
                 f"rel_err={mean_err:.4f}  "

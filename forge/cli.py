@@ -197,6 +197,8 @@ def cmd_quantize(args) -> None:
         cfg.solver.rescale = False
     if args.nsamples:
         cfg.calib.nsamples = args.nsamples
+    if args.exclude:
+        cfg.solver.exclude = tuple(args.exclude)
     cfg.dtype = args.dtype or "float32"
 
     device = torch.device(cfg.device)
@@ -293,6 +295,8 @@ def main() -> None:
     p.add_argument("--limit", type=int, help="perplexity windows to evaluate")
     p.add_argument("--out", help="write a markdown report here")
     p.add_argument("--export", help="write a stock TQ2_0 GGUF here")
+    p.add_argument("--exclude", nargs="*", metavar="STEM",
+                   help="tensor stems to leave un-ternarized, e.g. ffn_down")
     p.set_defaults(func=cmd_quantize)
 
     args = parser.parse_args()

@@ -32,6 +32,11 @@ class SolverConfig:
     sequential: bool = True
     rescale: bool = True
     factorization: str = "float64_cpu"
+    # GGUF tensor stems to leave un-ternarized, e.g. ("ffn_down",). Those tensors are
+    # exported at a higher-precision ggml type instead. This stays inside stock GGUF --
+    # llama-quantize takes `--tensor-type ffn_down=q4_K` -- so it costs memory but needs
+    # no runtime graph change, unlike an online rotation.
+    exclude: tuple[str, ...] = ()
 
 
 @dataclass
