@@ -169,10 +169,10 @@ class LayerwiseRunner:
             with accumulate_hessians(layer, block, self.device) as accs:
                 self._forward_block(layer, inputs_q)
 
-            # Step 2: teacher output, while the weights are still pristine. In
-            # non-sequential mode the two buffers are the same object and this pass would
-            # be pure duplicated work, so it is skipped.
-            outputs_fp = self._forward_block(layer, inputs_fp) if sequential else None
+            # Step 2: teacher output, while the weights are still pristine. This must
+            # happen in BOTH modes -- it is the only chance to see the unquantized
+            # output, and non-sequential mode is *defined* by feeding it forward.
+            outputs_fp = self._forward_block(layer, inputs_fp)
 
             yield BlockPass(
                 index=index,
@@ -186,7 +186,13 @@ class LayerwiseRunner:
             for acc in accs.values():
                 acc.release()
 
-            # Step 4: student output, through whatever the consumer left behind.
-            outputs_q = self._forward_block(layer, inputs_q)
-            inputs_fp = outputs_fp if sequential else outputs_q
-            inputs_q = outputs_q
+            if sequential:
+                # Step 4: student output, through whatever the consumer left behind, so
+                # the next block inherits the error this one just made.
+                inputs_q = self._forward_block(layer, inputs_q)
+                inputs_fp = outputs_fp
+            else:
+                # Every block sees clean inputs; error is never propagated. Advancing
+                # through the *quantized* layer here would silently make this identical
+                # to sequential mode, which is what tests/test_e2e_tiny.py caught.
+                inputs_fp = inputs_q = outputs_fp
