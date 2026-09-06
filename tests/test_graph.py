@@ -84,9 +84,12 @@ def test_rejects_inconsistent_head_dim():
 
 
 def test_rejects_unknown_architecture():
+    """Zamba2 is the live example: transformers supports it, llama.cpp does not, and FORGE
+    has no adapter -- so it must be refused rather than half-quantized."""
     with pytest.raises(ValueError, match="no FORGE adapter"):
-        build_graph(cfg(architectures=["MambaForCausalLM"]))
+        build_graph(cfg(architectures=["Zamba2ForCausalLM"], model_type="zamba2"))
     assert "Qwen2ForCausalLM" in supported_architectures()
+
 
 
 @pytest.mark.parametrize("c,expect_ternary", [(QWEN_1_5B, 1.31e9), (QWEN_7B, 6.53e9)])
