@@ -1,0 +1,51 @@
+[
+  {
+    "tensor": "attn_k",
+    "rel_error": 0.17414454980330032,
+    "attenuation": 0.9837308864701878,
+    "sparsity": 0.45520279624245386,
+    "H flatness": 0.325098532167348
+  },
+  {
+    "tensor": "attn_output",
+    "rel_error": 0.2856188289905814,
+    "attenuation": 0.9550140391696583,
+    "sparsity": 0.44769096916372125,
+    "H flatness": 0.7051728526976976
+  },
+  {
+    "tensor": "attn_q",
+    "rel_error": 0.22177291034974836,
+    "attenuation": 0.9740627787329934,
+    "sparsity": 0.45626685091040353,
+    "H flatness": 0.325098532167348
+  },
+  {
+    "tensor": "attn_v",
+    "rel_error": 0.3074347290464423,
+    "attenuation": 0.9493458528410305,
+    "sparsity": 0.4558299949223345,
+    "H flatness": 0.325098532167348
+  },
+  {
+    "tensor": "ffn_gate",
+    "rel_error": 0.23217961835590276,
+    "attenuation": 0.9703903523358431,
+    "sparsity": 0.45589547062462027,
+    "H flatness": 0.3333863368765874
+  },
+  {
+    "tensor": "ffn_up",
+    "rel_error": 0.3814905732870102,
+    "attenuation": 0.9219552102414045,
+    "sparsity": 0.457059922543439,
+    "H flatness": 0.3333863368765874
+  },
+  {
+    "tensor": "ssm_in",
+    "rel_error": 0.25213976780121977,
+    "attenuation": 0.9660225402225148,
+    "sparsity": 0.4563895098187707,
+    "H flatness": 0.32509852810339496
+  }
+]
