@@ -33,23 +33,38 @@ class _StopForward(Exception):
 
 # past_key_values would accumulate across replayed sequences; the rest are per-call flags
 # that must not leak between blocks.
-_DROP_KWARGS = ("past_key_values", "past_key_value", "use_cache", "cache_position")
+_DROP_KWARGS = (
+    "past_key_values", "past_key_value", "use_cache", "cache_position",
+    "cache_params",  # Mamba: a mutable state object that would leak between replays
+)
 
 
 def _sanitize(kwargs: dict) -> dict:
     return {k: v for k, v in kwargs.items() if k not in _DROP_KWARGS}
 
 
+def get_layers(model, layers_path: str):
+    """Resolve the ModuleList of transformer/SSM blocks by dotted path."""
+    obj = model
+    for part in layers_path.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
 @torch.no_grad()
 def capture_block_inputs(
-    model, input_ids: torch.Tensor, device: torch.device, store_dtype=torch.float16
+    model,
+    input_ids: torch.Tensor,
+    device: torch.device,
+    store_dtype=torch.float16,
+    layers_path: str = "model.layers",
 ) -> tuple[torch.Tensor, dict]:
     """Run embeddings and rotary, and catch what layer 0 would have received.
 
     Returns (hidden_states, shared_kwargs). Sequences are pushed through one at a time so
     the captured position_embeddings match the batch size used during replay.
     """
-    layers = model.model.layers
+    layers = get_layers(model, layers_path)
     captured: list[torch.Tensor] = []
     shared: dict = {}
 
@@ -158,13 +173,14 @@ class LayerwiseRunner:
              block inherits the error this one just made.
         """
         hidden, self._kwargs = capture_block_inputs(
-            self.model, input_ids, self.device, self.store_dtype
+            self.model, input_ids, self.device, self.store_dtype, self.graph.layers_path
         )
+        layers = get_layers(self.model, self.graph.layers_path)
         inputs_fp = hidden
         inputs_q = hidden.clone() if sequential else hidden
 
         for index, block in enumerate(self.graph.blocks):
-            layer = self.model.model.layers[index]
+            layer = layers[index]
 
             with accumulate_hessians(layer, block, self.device) as accs:
                 hessian_pass = self._forward_block(layer, inputs_q)

@@ -199,8 +199,11 @@ def fuse_rotations(
     r1 = torch.from_numpy(r1_np).to(device, dtype)
     apply_r1(model, graph, r1)
 
+    # R3 rotates the per-head value subspace, so it only exists where there are attention
+    # heads. A state-space model has none, and asking for a Hadamard of order 0 is how that
+    # used to surface. Gate on the architecture, not on the caller's flag.
     r3 = None
-    if rotate_head_dim:
+    if rotate_head_dim and graph.has_attention and graph.head_dim > 0:
         h_np = hadamard_matrix(graph.head_dim).astype(np.float64) / np.sqrt(graph.head_dim)
         r3 = torch.from_numpy(h_np).to(device, dtype)
         apply_r3(model, graph, r3)

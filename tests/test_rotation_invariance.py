@@ -243,3 +243,75 @@ def test_rotation_reduces_weight_kurtosis():
 
     assert after < before, f"kurtosis rose: {before:.2f} -> {after:.2f}"
     assert after < 5.0, f"still heavy-tailed after rotation: {after:.2f}"
+
+
+# ------------------------------------------------------------------ state-space models
+
+
+def tiny_mamba(seed: int = 0):
+    """A small Falcon-Mamba with non-trivial RMSNorm gains."""
+    from transformers import FalconMambaConfig, FalconMambaForCausalLM
+
+    torch.manual_seed(seed)
+    cfg = FalconMambaConfig(
+        hidden_size=256, intermediate_size=512, num_hidden_layers=3,
+        state_size=8, conv_kernel=4, time_step_rank=16,
+        vocab_size=512, use_bias=False, tie_word_embeddings=False,
+    )
+    model = FalconMambaForCausalLM(cfg).to(torch.float32).eval()
+    for name, param in model.named_parameters():
+        if name.endswith("norm.weight") or name.endswith("norm_f.weight"):
+            param.data = torch.rand_like(param.data) * 1.5 + 0.25
+    return model
+
+
+def test_mamba_fusion_preserves_logits():
+    """The same invariant, on a state-space model.
+
+    A Mamba block is `residual + out_proj(SSM(conv(in_proj(norm(x)))))`, so in_proj reads
+    the residual stream and out_proj writes it -- the rotation applies unchanged. The SSM
+    internals never touch the residual and must be left alone.
+    """
+    model = tiny_mamba()
+    graph = build_graph(model.config)
+    ids = sample_ids(model, n=2, length=24)
+
+    before = logits_of(model, ids)
+    fuse_rotations(model, graph, seed=1234, dtype=torch.float64)
+    assert max_abs_diff(before, logits_of(model, ids)) < TOL
+
+
+def test_mamba_graph_shape():
+    graph = build_graph(tiny_mamba().config)
+    assert graph.has_attention is False
+    assert graph.layers_path == "backbone.layers"
+    assert graph.embed_name == "backbone.embeddings"
+    assert graph.final_norm_name == "backbone.norm_f"
+    assert len(graph.blocks[0].linears) == 2
+    assert {s.gguf_name for s in graph.blocks[0].linears} == {
+        "blk.0.ssm_in.weight", "blk.0.ssm_out.weight"
+    }
+
+
+def test_mamba_r3_is_skipped_not_attempted():
+    """R3 has no analogue without attention heads; asking for it must be a no-op, not a
+    Hadamard of order 0."""
+    model = tiny_mamba()
+    graph = build_graph(model.config)
+    plan = fuse_rotations(model, graph, seed=0, rotate_head_dim=True, dtype=torch.float64)
+    assert plan.r3 is None
+
+
+def test_mamba_ssm_internals_are_untouched_by_rotation():
+    """x_proj, dt_proj, A_log, D and conv1d live inside the mixer and must not move."""
+    model = tiny_mamba()
+    graph = build_graph(model.config)
+    keep = {
+        n: p.data.clone()
+        for n, p in model.named_parameters()
+        if any(k in n for k in ("x_proj", "dt_proj", "A_log", ".D", "conv1d"))
+    }
+    assert keep, "expected to find SSM internals"
+    fuse_rotations(model, graph, seed=0, dtype=torch.float64)
+    for name, original in keep.items():
+        torch.testing.assert_close(dict(model.named_parameters())[name].data, original)
