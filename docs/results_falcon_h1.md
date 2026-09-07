@@ -7,7 +7,7 @@ byte-identical to the frozen release.
 ## Artifact
 
 ```
-/Users/sebastiangrebe/Documents/Git/forge/out/falcon-h1-7b-forge-mixed.gguf
+out/falcon-h1-7b-forge-mixed.gguf
 ```
 
 | | |

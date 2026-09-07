@@ -6,7 +6,7 @@ flatness outlier the earlier run had already flagged.
 ## Artifact
 
 ```
-/Users/sebastiangrebe/Documents/Git/forge/out/falcon-h1-7b-forge-v2.gguf
+out/falcon-h1-7b-forge-v2.gguf
 ```
 
 | | |
